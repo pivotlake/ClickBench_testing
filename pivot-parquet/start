@@ -18,10 +18,11 @@ fi
 # no background compacter.
 #
 # Point the server at $PIVOT_CATALOG the way this build expects. The flags moved
-# three times: oldest builds take `--path <dir>`; then `--metastore <file>`
-# naming that same directory, first in TOML and later in YAML; newest builds
-# take one `--config <file>` that holds a `server` section (where the bind
-# address moved to, so `--bind` is gone) and the metastore nested beside it. An
+# four times: oldest builds take `--path <dir>`; then `--metastore <file>`
+# naming that same directory, first in TOML and later in YAML; then one
+# `--config <file>` that holds a `server` section (where the bind address moved
+# to, so `--bind` is gone) and the metastore nested beside it; newest builds
+# keep `--config` but lift the datastores and users to the file's top level. An
 # A/B run times two commits that can straddle any of those changes, so probe
 # `--help` rather than hard-code one: that would leave one side unable to start.
 # Match a flag as a whole word, or a build carrying an unrelated `--otel-config`
@@ -32,7 +33,27 @@ HELP="$("${SERVER[@]}" --help 2>&1)"
 # `postgres`, so that name is the one defined here. Trust asks for no password,
 # which is what the non-interactive psql calls need. Memory and worker budgets
 # are left unset so both sides take the same machine-derived defaults.
-if grep -qE '(^|[[:space:]])--config([[:space:]]|=|$)' <<<"$HELP"; then
+if grep -q '`metastore` names the file' <<<"$HELP"; then
+    # The newest layout: `datastores` and `users` sit at the file's top level,
+    # and a `metastore` section would name the file the server writes to. No
+    # such file here, since the benchmark never creates users. The `--config`
+    # help text names that section's new role, which is what this probe reads.
+    CONFIG="/tmp/pivot-config-$PIVOT_PORT.yaml"
+    cat > "$CONFIG" <<EOF
+server:
+  bind: 127.0.0.1:$PIVOT_PORT
+datastores:
+  default:
+    kind: pivot
+    location: $PIVOT_CATALOG
+    default: true
+users:
+  postgres:
+    auth:
+      method: trust
+EOF
+    ARGS=(--config "$CONFIG")
+elif grep -qE '(^|[[:space:]])--config([[:space:]]|=|$)' <<<"$HELP"; then
     CONFIG="/tmp/pivot-config-$PIVOT_PORT.yaml"
     cat > "$CONFIG" <<EOF
 server:
