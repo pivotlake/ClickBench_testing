@@ -14,8 +14,9 @@ if "$BIN" server --help >/dev/null 2>&1; then
 else
     SERVER=("$BIN")
 fi
-# Compaction is off by default; the benchmark reads a static parquet, so we want
-# no background compacter.
+# The benchmark reads static parquet files, so the default datastore turns its
+# background compaction off: on, it would rewrite the source files once enough
+# of them accumulate, changing the dataset under the run.
 #
 # Point the server at $PIVOT_CATALOG the way this build expects. The flags moved
 # four times: oldest builds take `--path <dir>`; then `--metastore <file>`
@@ -33,11 +34,14 @@ HELP="$("${SERVER[@]}" --help 2>&1)"
 # `postgres`, so that name is the one defined here. Trust asks for no password,
 # which is what the non-interactive psql calls need. Memory and worker budgets
 # are left unset so both sides take the same machine-derived defaults.
-if grep -q '`metastore` names the file' <<<"$HELP"; then
+if grep -q '`datastores`' <<<"$HELP"; then
     # The newest layout: `datastores` and `users` sit at the file's top level,
     # and a `metastore` section would name the file the server writes to. No
     # such file here, since the benchmark never creates users. The `--config`
-    # help text names that section's new role, which is what this probe reads.
+    # help text lists the top-level keys in backticks, and `datastores` is one
+    # of them only in this layout; the nested layout's help speaks of the
+    # datastores in prose. Probe the key, not the sentence around it: the
+    # sentence has been reworded before while the layout stayed the same.
     CONFIG="/tmp/pivot-config-$PIVOT_PORT.yaml"
     cat > "$CONFIG" <<EOF
 server:
@@ -47,6 +51,7 @@ datastores:
     kind: pivot
     location: $PIVOT_CATALOG
     default: true
+    compact: false
 users:
   postgres:
     auth:
