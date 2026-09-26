@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
+# When the caller supplies a pre-built server (e.g. an A/B harness that builds
+# each commit itself), there is nothing to install here — ./start runs that
+# binary directly.
+if [ -n "${PIVOT_SERVER_BIN:-}" ]; then
+  echo "install: using pre-built server $PIVOT_SERVER_BIN; skipping build"
+  exit 0
+fi
 source "$HOME/.cargo/env"; export PATH="/usr/local/bin:$PATH"
 cd "$HOME/pivotdb/benchmarks"
 # PGO profile on the small subset (skill convention); reuse if present.

@@ -3,5 +3,41 @@ set -e
 export LC_ALL=C.UTF-8
 BIN="$HOME/pivotdb/benchmarks/target-pgouse/release/pivotdb-server"
 mkdir -p "$PIVOT_CATALOG"
-nohup "$BIN" --bind "127.0.0.1:$PIVOT_PORT" --path "$PIVOT_CATALOG" --compact-bytes 0 \
+# Point the server at $PIVOT_CATALOG using whichever flag this build accepts.
+# Oldest builds take `--path <dir>`. Newer ones dropped it for `--metastore
+# <file>` naming that same directory, first in TOML and later in YAML. An A/B
+# run compares two commits that may sit on either side of those changes, so the
+# format is chosen from the flag's own help text rather than assumed.
+if "$BIN" --help 2>&1 | grep -q 'Metastore file (YAML)'; then
+    METASTORE="/tmp/pivot-metastore-$PIVOT_PORT.yaml"
+    # A single datastore, marked default, so unqualified names resolve to it.
+    # `users` is an allowlist once it is present, and the adapter's psql calls
+    # connect as `postgres`, so that name is the one defined here. Trust asks
+    # for no password, which is what the harness's non-interactive psql needs.
+    cat > "$METASTORE" <<EOF
+datastores:
+  default:
+    kind: delta
+    location: $PIVOT_CATALOG
+    default: true
+users:
+  postgres:
+    auth:
+      method: trust
+EOF
+    STORE_ARGS=(--metastore "$METASTORE")
+elif "$BIN" --help 2>&1 | grep -q -- '--metastore'; then
+    METASTORE="/tmp/pivot-metastore-$PIVOT_PORT.toml"
+    # A single datastore, marked default, so unqualified names resolve to it.
+    cat > "$METASTORE" <<EOF
+[datastore.default]
+kind = "delta"
+location = "$PIVOT_CATALOG"
+default = true
+EOF
+    STORE_ARGS=(--metastore "$METASTORE")
+else
+    STORE_ARGS=(--path "$PIVOT_CATALOG")
+fi
+nohup "$BIN" --bind "127.0.0.1:$PIVOT_PORT" "${STORE_ARGS[@]}" \
     > "/tmp/pivot-server-$PIVOT_PORT.log" 2>&1 &

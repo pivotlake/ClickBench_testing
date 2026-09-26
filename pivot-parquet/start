@@ -1,7 +1,104 @@
 #!/bin/bash
 set -e
 export LC_ALL=C.UTF-8
-BIN="$HOME/pivotdb/benchmarks/target-pgouse/release/pivotdb-server"
+# A/B and multi-build callers set PIVOT_SERVER_BIN to time a specific build;
+# otherwise fall back to the in-tree PGO server.
+BIN="${PIVOT_SERVER_BIN:-$HOME/pivotdb/benchmarks/target-pgouse/release/pivot}"
 mkdir -p "$PIVOT_CATALOG"
-nohup "$BIN" --bind "127.0.0.1:$PIVOT_PORT" --path "$PIVOT_CATALOG" --compact-bytes 0 \
-    > "/tmp/pivot-server-$PIVOT_PORT.log" 2>&1 &
+# Older builds ship the server as its own `pivotdb-server` executable that takes
+# the server flags directly; newer ones fold it into the `pivot` CLI, where the
+# same flags hang off a `server` subcommand. A bare server rejects `server` as
+# an unexpected argument even with `--help`, so this probe tells the two apart.
+if "$BIN" server --help >/dev/null 2>&1; then
+    SERVER=("$BIN" server)
+else
+    SERVER=("$BIN")
+fi
+# The benchmark reads static parquet files, so the default datastore turns its
+# background compaction off: on, it would rewrite the source files once enough
+# of them accumulate, changing the dataset under the run.
+#
+# Point the server at $PIVOT_CATALOG the way this build expects. The flags moved
+# four times: oldest builds take `--path <dir>`; then `--metastore <file>`
+# naming that same directory, first in TOML and later in YAML; then one
+# `--config <file>` that holds a `server` section (where the bind address moved
+# to, so `--bind` is gone) and the metastore nested beside it; newest builds
+# keep `--config` but lift the datastores and users to the file's top level. An
+# A/B run times two commits that can straddle any of those changes, so probe
+# `--help` rather than hard-code one: that would leave one side unable to start.
+# Match a flag as a whole word, or a build carrying an unrelated `--otel-config`
+# would read as a `--config` build.
+HELP="$("${SERVER[@]}" --help 2>&1)"
+# A single datastore, marked default, so unqualified names resolve to it.
+# `users` is an allowlist once present, and this adapter's psql calls connect as
+# `postgres`, so that name is the one defined here. Trust asks for no password,
+# which is what the non-interactive psql calls need. Memory and worker budgets
+# are left unset so both sides take the same machine-derived defaults.
+if grep -q '`datastores`' <<<"$HELP"; then
+    # The newest layout: `datastores` and `users` sit at the file's top level,
+    # and a `metastore` section would name the file the server writes to. No
+    # such file here, since the benchmark never creates users. The `--config`
+    # help text lists the top-level keys in backticks, and `datastores` is one
+    # of them only in this layout; the nested layout's help speaks of the
+    # datastores in prose. Probe the key, not the sentence around it: the
+    # sentence has been reworded before while the layout stayed the same.
+    CONFIG="/tmp/pivot-config-$PIVOT_PORT.yaml"
+    cat > "$CONFIG" <<EOF
+server:
+  bind: 127.0.0.1:$PIVOT_PORT
+datastores:
+  default:
+    kind: pivot
+    location: $PIVOT_CATALOG
+    default: true
+    compact: false
+users:
+  postgres:
+    auth:
+      method: trust
+EOF
+    ARGS=(--config "$CONFIG")
+elif grep -qE '(^|[[:space:]])--config([[:space:]]|=|$)' <<<"$HELP"; then
+    CONFIG="/tmp/pivot-config-$PIVOT_PORT.yaml"
+    cat > "$CONFIG" <<EOF
+server:
+  bind: 127.0.0.1:$PIVOT_PORT
+metastore:
+  datastores:
+    default:
+      kind: pivot
+      location: $PIVOT_CATALOG
+      default: true
+  users:
+    postgres:
+      auth:
+        method: trust
+EOF
+    ARGS=(--config "$CONFIG")
+elif grep -q 'Metastore file (YAML)' <<<"$HELP"; then
+    METASTORE="/tmp/pivot-metastore-$PIVOT_PORT.yaml"
+    cat > "$METASTORE" <<EOF
+datastores:
+  default:
+    kind: delta
+    location: $PIVOT_CATALOG
+    default: true
+users:
+  postgres:
+    auth:
+      method: trust
+EOF
+    ARGS=(--bind "127.0.0.1:$PIVOT_PORT" --metastore "$METASTORE")
+elif grep -qE '(^|[[:space:]])--metastore([[:space:]]|=|$)' <<<"$HELP"; then
+    METASTORE="/tmp/pivot-metastore-$PIVOT_PORT.toml"
+    cat > "$METASTORE" <<EOF
+[datastore.default]
+kind = "delta"
+location = "$PIVOT_CATALOG"
+default = true
+EOF
+    ARGS=(--bind "127.0.0.1:$PIVOT_PORT" --metastore "$METASTORE")
+else
+    ARGS=(--bind "127.0.0.1:$PIVOT_PORT" --path "$PIVOT_CATALOG")
+fi
+nohup "${SERVER[@]}" "${ARGS[@]}" > "/tmp/pivot-server-$PIVOT_PORT.log" 2>&1 &

@@ -1,4 +1,19 @@
 #!/bin/bash
 export LC_ALL=C.UTF-8
-# bracket avoids self-match; key on the bind port so we only kill our server.
-pkill -9 -f "[p]ivotdb-server --bind 127.0.0.1:$PIVOT_PORT" 2>/dev/null || true
+# Bracket avoids self-match; key on the port so we only kill our own server.
+# The process is either a bare `pivotdb-server` (older builds) or `pivot server`
+# (newer ones), whichever ./start launched. Which argument carries the port
+# depends on the build ./start probed for: older ones take
+# `--bind 127.0.0.1:$PIVOT_PORT`, newer ones take a `--config` (or `--metastore`)
+# file whose name we stamp the port into precisely so this match keeps working.
+pkill -9 -f "[p]ivot(db-server|[[:space:]]+server) .*(--bind 127\.0\.0\.1:$PIVOT_PORT|pivot-(config|metastore)-$PIVOT_PORT\.)" 2>/dev/null || true
+# pkill returns before the kernel has torn the process down, and a server can
+# hold most of the machine's RAM; a successor started against that half-freed
+# memory risks an OOM kill. The memory is returned before the pid leaves the
+# process table, so wait (bounded) until no server is listed. -C matches the
+# executable name, so this script can never match itself.
+for _ in $(seq 1 300); do
+    ps -C pivotdb-server,pivot >/dev/null 2>&1 || exit 0
+    sleep 0.2
+done
+echo "stop: the server is still in the process table after 60s" >&2
