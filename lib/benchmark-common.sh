@@ -47,6 +47,14 @@
 #                                  rather than a warm query against a
 #                                  freshly-loaded RAM dataset.
 #   BENCH_TRIES            Number of times each query is run. Default 3.
+#   BENCH_SLEEP_BETWEEN_QUERIES
+#                          Seconds to pause between consecutive tries of a
+#                          query (fractions allowed, e.g. 0.5). Default 0.
+#                          Gives a server whose workers reclaim their
+#                          buffers after a query time to finish before the
+#                          next try starts, so that work does not land
+#                          inside the next timing. Applied between tries
+#                          only; the cold cycle already separates queries.
 #   BENCH_QUERIES_FILE     Path to a queries file, one query per line.
 #                          Default "queries.sql" (in the system dir).
 #   BENCH_CHECK_TIMEOUT    Seconds to wait for ./check to succeed. Default 300.
@@ -77,6 +85,7 @@ export HOME="${HOME:-/root}"
 : "${BENCH_RESTARTABLE:=yes}"
 : "${BENCH_DURABLE:=yes}"
 : "${BENCH_TRIES:=3}"
+: "${BENCH_SLEEP_BETWEEN_QUERIES:=0}"
 : "${BENCH_QUERIES_FILE:=queries.sql}"
 : "${BENCH_CHECK_TIMEOUT:=300}"
 : "${BENCH_CONCURRENT_CONNECTIONS:=10}"
@@ -251,6 +260,9 @@ bench_run_query() {
     fi
 
     for i in $(seq 1 "$BENCH_TRIES"); do
+        if [ "$i" -gt 1 ] && [ "$BENCH_SLEEP_BETWEEN_QUERIES" != "0" ]; then
+            sleep "$BENCH_SLEEP_BETWEEN_QUERIES"
+        fi
         # The query script's contract: stdout = result, stderr's last line =
         # fractional seconds, exit 0 on success.
         raw_stderr=$(printf '%s\n' "$query" | ./query 2>&1 >/dev/null) && exit_code=0 || exit_code=$?
