@@ -29,6 +29,11 @@ fi
 # Match a flag as a whole word, or a build carrying an unrelated `--otel-config`
 # would read as a `--config` build.
 HELP="$("${SERVER[@]}" --help 2>&1)"
+# Optional core reservation: confine the server (its workers pin themselves to
+# the cores of this mask) so the harness and client keep their own cores.
+if [ -n "${PIVOT_WORKER_CORES:-}" ]; then
+    SERVER=(taskset -c "$PIVOT_WORKER_CORES" "${SERVER[@]}")
+fi
 # A single datastore, marked default, so unqualified names resolve to it.
 # `users` is an allowlist once present, and this adapter's psql calls connect as
 # `postgres`, so that name is the one defined here. Trust asks for no password,

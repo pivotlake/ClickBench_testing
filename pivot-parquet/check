@@ -2,3 +2,19 @@
 set -e
 export LC_ALL=C.UTF-8
 psql -h 127.0.0.1 -p "$PIVOT_PORT" -U postgres -d postgres -tAc "SELECT 1" >/dev/null
+# Optional: once the server answers, move its threads that are not pinned to a
+# single core (runtime, connection handlers, IO) onto PIVOT_CONTROL_CORES, off
+# the worker cores. Idempotent, so running it on every check is harmless.
+if [ -n "${PIVOT_CONTROL_CORES:-}" ]; then
+    for pid in $(pgrep -x pivot); do
+        # Once per server process: the threads that exist when it first answers
+        # are the long-lived ones, and later threads inherit their parent's mask.
+        marker="/tmp/pivot-control-moved-$PIVOT_PORT-$pid"
+        [ -e "$marker" ] && continue
+        for t in /proc/$pid/task/*; do
+            allowed=$(awk '/^Cpus_allowed_list/{print $2}' "$t/status" 2>/dev/null)
+            case "$allowed" in *-*|*,*) taskset -pc "$PIVOT_CONTROL_CORES" "${t##*/}" >/dev/null 2>&1 || true ;; esac
+        done
+        touch "$marker"
+    done
+fi
